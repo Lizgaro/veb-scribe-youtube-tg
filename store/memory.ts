@@ -3,6 +3,14 @@ export type AnalysisRecord = {
   input: string;
   analysis: string;
   post?: string;
+  transcriptText?: string;
+  metrics?: {
+    durationSec: number | null;
+    segmentCount: number | null;
+    wordCount: number;
+    wordsPerMinute: number | null;
+    topKeywords: string[];
+  }
 };
 
 type StoreShape = {
