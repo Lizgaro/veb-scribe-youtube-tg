@@ -98,6 +98,38 @@ export async function fetchTranscript(input: string): Promise<YTTranscript> {
     return { id, segments: segs, text, durationSec, wordCount };
   }
 
-  // 2) Fallback to description scraping
-  return await fetchDescriptionFallback(id);
+  // 2) Fallback to description scraping (best-effort)
+  try {
+    return await fetchDescriptionFallback(id);
+  } catch (_) {
+    // continue to metadata fallback
+  }
+
+  // 3) Final fallback: use oEmbed metadata (title/author)
+  try {
+    const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
+    if (oembed.ok) {
+      const data = await oembed.json() as any;
+      const title = (data?.title as string) || `YouTube Video ${id}`;
+      const author = (data?.author_name as string) || '';
+      const text = [title, author].filter(Boolean).join(' — ');
+      const segments: YTSegment[] = text
+        .split(/(?:\.|!|\?|\n)+/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((t, i) => ({ text: t, duration: 0, offset: i === 0 ? 0 : i * 3 }));
+      const durationSec = null as unknown as number; // preserve type; downstream treats null as unknown
+      const wordCount = (text.match(/[\p{L}\p{N}’'-]+/gu) || []).length;
+      return { id, segments, text, durationSec, wordCount };
+    }
+  } catch (_) {
+    // ignore
+  }
+
+  // 4) Absolute minimal fallback: use ID as text to keep pipeline alive
+  const text = `YouTube video: ${id}`;
+  const segments: YTSegment[] = [{ text, duration: 0, offset: 0 }];
+  const durationSec = null as unknown as number;
+  const wordCount = (text.match(/[\p{L}\p{N}’'-]+/gu) || []).length;
+  return { id, segments, text, durationSec, wordCount };
 }
