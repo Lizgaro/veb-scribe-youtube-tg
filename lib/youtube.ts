@@ -27,14 +27,12 @@ export function extractVideoId(input: string): string | null {
 }
 
 async function tryFetchTranscriptAnyLang(id: string): Promise<YTSegment[] | null> {
-  const langs = ['ru', 'uk', 'kk', 'en', 'en-US', 'en-GB'];
-  for (const lang of langs) {
-    try {
-      const segs = (await YoutubeTranscript.fetchTranscript(id, { lang })) as any as YTSegment[];
-      if (segs?.length) return segs;
-    } catch (_) {
-      // continue
-    }
+  try {
+    // Let the library automatically find the best available transcript
+    const segs = (await YoutubeTranscript.fetchTranscript(id)) as any as YTSegment[];
+    if (segs?.length) return segs;
+  } catch (_) {
+    // continue
   }
   return null;
 }
