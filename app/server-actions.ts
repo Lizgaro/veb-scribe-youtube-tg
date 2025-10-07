@@ -1,42 +1,9 @@
 "use server";
 
-import { redirect } from "next/navigation";
-import { store } from "../store/memory";
-import { analyzeText, generatePost } from "../lib/analyzer";
-import { fetchTranscript } from "../lib/youtube";
+import { createPromptForLLM, analyzeText } from "../lib/analyzer.js";
+import { fetchTranscript } from "../lib/youtube.ts";
 import { computeMetrics } from "../lib/metrics";
-
-export async function analyze(formData: FormData) {
-  const input = String(formData.get("input") || "").trim();
-  if (!input) return;
-  const id = crypto.randomUUID();
-  let sourceText = input;
-  let metrics = undefined as any;
-  try {
-    if (/youtube\.com|youtu\.be/i.test(input)) {
-      const t = await fetchTranscript(input);
-      sourceText = t.text || input;
-      metrics = computeMetrics(sourceText, { durationSec: t.durationSec, segmentCount: t.segments.length });
-    } else {
-      metrics = computeMetrics(sourceText);
-    }
-  } catch (e) {
-    metrics = computeMetrics(sourceText);
-  }
-  const analysis = analyzeText(sourceText);
-  store.save({ id, input, analysis, transcriptText: sourceText !== input ? sourceText : undefined, metrics });
-  redirect(`/analysis/${id}`);
-}
-
-export async function generate(formData: FormData) {
-  const id = String(formData.get("id") || "");
-  const topic = String(formData.get("topic") || "").trim();
-  const rec = store.get(id);
-  if (!rec) return;
-  const post = generatePost(rec.analysis, topic || "Новая тема", "telegram");
-  store.setPost(id, post);
-  redirect(`/analysis/${id}`);
-}
+import { generateTextWithHuggingFace } from "../lib/llm.js";
 
 // Inline variant to work on serverless (no cross-request memory needed)
 export type AnalyzeState = {
@@ -45,6 +12,8 @@ export type AnalyzeState = {
   input?: string;
   analysis?: string;
   transcriptText?: string;
+  title?: string;
+  description?: string;
   metrics?: {
     durationSec: number | null;
     segmentCount: number | null;
@@ -60,15 +29,20 @@ export async function analyzeInline(_prevState: AnalyzeState, formData: FormData
   try {
     let sourceText = input;
     let metrics: AnalyzeState["metrics"] | undefined;
+    let title: string | undefined;
+    let description: string | undefined;
+
     if (/youtube\.com|youtu\.be/i.test(input)) {
       const t = await fetchTranscript(input);
       sourceText = t.text || input;
+      title = t.title;
+      description = t.description;
       metrics = computeMetrics(sourceText, { durationSec: t.durationSec, segmentCount: t.segments.length });
     } else {
       metrics = computeMetrics(sourceText);
     }
     const analysis = analyzeText(sourceText);
-    return { ok: true, input, analysis, transcriptText: sourceText !== input ? sourceText : undefined, metrics };
+    return { ok: true, input, analysis, transcriptText: sourceText, title, description, metrics };
   } catch (e: any) {
     return { ok: false, error: e?.message || "Ошибка анализа" };
   }
@@ -76,14 +50,24 @@ export async function analyzeInline(_prevState: AnalyzeState, formData: FormData
 
 export type GenerateState = { ok: boolean; error?: string; post?: string };
 
-export async function generateFromAnalysis(_prev: GenerateState, formData: FormData): Promise<GenerateState> {
+export async function generatePostWithLLM(_prev: GenerateState, formData: FormData): Promise<GenerateState> {
   try {
-    const analysis = String(formData.get("analysis") || "");
+    const transcript = String(formData.get("transcript") || "");
+    const title = String(formData.get("title") || "");
+    const description = String(formData.get("description") || "");
     const topic = String(formData.get("topic") || "").trim();
-    if (!analysis) return { ok: false, error: "Нет анализа" };
-    const post = generatePost(analysis, topic || "Новая тема", "telegram");
+
+    if (!transcript || !title) {
+        return { ok: false, error: "Отсутствует транскрипт или заголовок для генерации." };
+    }
+
+    const prompt = createPromptForLLM(transcript, title, description, topic, "telegram");
+
+    const post = await generateTextWithHuggingFace(prompt);
+
     return { ok: true, post };
   } catch (e: any) {
+    console.error("[generatePostWithLLM]", e);
     return { ok: false, error: e?.message || "Ошибка генерации" };
   }
 }
