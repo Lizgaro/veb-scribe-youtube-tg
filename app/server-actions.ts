@@ -1,7 +1,7 @@
 "use server";
 
 import { createPromptForLLM, analyzeText } from "../lib/analyzer.js";
-import { fetchTranscript } from "../lib/youtube.ts";
+import { fetchTranscript } from "../lib/youtube";
 import { computeMetrics } from "../lib/metrics";
 import { generateTextWithHuggingFace } from "../lib/llm.js";
 
