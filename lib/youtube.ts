@@ -3,11 +3,40 @@ import { YoutubeTranscript } from 'youtube-transcript';
 export type YTSegment = { text: string; duration: number; offset: number };
 export type YTTranscript = {
   id: string;
+  title: string;
+  description: string;
   segments: YTSegment[];
   text: string;
   durationSec: number;
   wordCount: number;
 };
+
+async function fetchVideoDetails(id: string) {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) {
+    console.warn("YOUTUBE_API_KEY is not set. Falling back to oEmbed.");
+    return null;
+  }
+
+  const url = `https://www.googleapis.com/youtube/v3/videos?id=${id}&part=snippet&key=${apiKey}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    console.error(`Failed to fetch video details from YouTube API: ${res.status}`);
+    return null;
+  }
+
+  const data = await res.json();
+  const snippet = data.items?.[0]?.snippet;
+  if (!snippet) {
+    console.error("No video snippet found in YouTube API response.");
+    return null;
+  }
+
+  return {
+    title: snippet.title,
+    description: snippet.description,
+  };
+}
 
 export function extractVideoId(input: string): string | null {
   // Supports youtu.be/VIDEOID and youtube.com/watch?v=VIDEOID and youtube.com/shorts/VIDEOID
@@ -37,97 +66,79 @@ async function tryFetchTranscriptAnyLang(id: string): Promise<YTSegment[] | null
   return null;
 }
 
-function htmlUnescape(s: string) {
-  return s
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '\t')
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, '\\')
-    .replace(/\u0026/g, '&')
-    .replace(/\u003c/g, '<')
-    .replace(/\u003e/g, '>');
-}
-
-async function fetchDescriptionFallback(id: string): Promise<YTTranscript> {
-  const res = await fetch(`https://www.youtube.com/watch?v=${id}&hl=ru`);
-  if (!res.ok) throw new Error(`Не удалось загрузить страницу видео: ${res.status}`);
-  const html = await res.text();
-
-  // Try to extract shortDescription and lengthSeconds from the embedded JSON
-  const descMatch = html.match(/"shortDescription":"([\s\S]*?)"/);
-  const lenMatch = html.match(/"lengthSeconds":"?(\d+)"?/);
-  const descRaw = descMatch?.[1] ?? '';
-  const desc = htmlUnescape(descRaw);
-  const lengthSeconds = lenMatch ? parseInt(lenMatch[1], 10) : null;
-
-  if (!desc.trim()) {
-    throw new Error('На видео отключены субтитры и недоступно описание');
-  }
-
-  const sentences = desc
-    .split(/(?:\.|!|\?|\n)+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const durationSec = lengthSeconds ?? Math.max(60, Math.min(1200, Math.round((desc.split(/\s+/).length / 150) * 60)));
-  const approxPer = Math.max(3, Math.floor(durationSec / Math.max(1, sentences.length)));
-  let offset = 0;
-  const segments: YTSegment[] = sentences.map((t) => {
-    const seg = { text: t, duration: approxPer, offset };
-    offset += approxPer;
-    return seg;
-  });
-
-  const text = desc;
-  const wordCount = (text.match(/[\p{L}\p{N}’'-]+/gu) || []).length;
-  return { id, segments, text, durationSec, wordCount };
-}
-
 export async function fetchTranscript(input: string): Promise<YTTranscript> {
   const id = extractVideoId(input);
   if (!id) throw new Error('Не удалось извлечь ID видео YouTube');
 
-  // 1) Try multiple languages
-  const segs = await tryFetchTranscriptAnyLang(id);
-  if (segs && segs.length) {
-    const text = segs.map((s) => s.text).join(' ');
+  // Fetch details and transcript in parallel
+  const [details, segs] = await Promise.all([
+    fetchVideoDetails(id),
+    tryFetchTranscriptAnyLang(id),
+  ]);
+
+  let text: string;
+  let segments: YTSegment[];
+  let durationSec: number | null;
+  let title = details?.title;
+  let description = details?.description || '';
+
+  if (segs?.length) {
+    // --- Primary case: Transcript is available ---
+    text = segs.map((s) => s.text).join(' ');
+    segments = segs;
     const last = segs[segs.length - 1];
-    const durationSec = Math.round((last?.offset ?? 0) + (last?.duration ?? 0));
-    const wordCount = (text.match(/[\p{L}\p{N}’'-]+/gu) || []).length;
-    return { id, segments: segs, text, durationSec, wordCount };
-  }
-
-  // 2) Fallback to description scraping (best-effort)
-  try {
-    return await fetchDescriptionFallback(id);
-  } catch (_) {
-    // continue to metadata fallback
-  }
-
-  // 3) Final fallback: use oEmbed metadata (title/author)
-  try {
-    const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
-    if (oembed.ok) {
-      const data = await oembed.json() as any;
-      const title = (data?.title as string) || `YouTube Video ${id}`;
-      const author = (data?.author_name as string) || '';
-      const text = [title, author].filter(Boolean).join(' — ');
-      const segments: YTSegment[] = text
-        .split(/(?:\.|!|\?|\n)+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((t, i) => ({ text: t, duration: 0, offset: i === 0 ? 0 : i * 3 }));
-      const durationSec = null as unknown as number; // preserve type; downstream treats null as unknown
-      const wordCount = (text.match(/[\p{L}\p{N}’'-]+/gu) || []).length;
-      return { id, segments, text, durationSec, wordCount };
+    durationSec = Math.round((last?.offset ?? 0) + (last?.duration ?? 0));
+  } else {
+    // --- Fallback case: No transcript available ---
+    durationSec = null;
+    // Use description from API if available
+    if (details?.description) {
+      text = details.description;
+    } else {
+      // Fallback further to oEmbed if no details from API
+      try {
+        const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
+        if (oembed.ok) {
+          const data = await oembed.json() as any;
+          if (!title) title = (data?.title as string) || `YouTube Video ${id}`;
+          text = [title, (data?.author_name as string) || ''].filter(Boolean).join(' — ');
+        } else {
+          text = `YouTube video: ${id}`; // Minimal fallback
+        }
+      } catch (e) {
+        console.error(`[yt-fallback-oembed] failed for id=${id}:`, e);
+        text = `YouTube video: ${id}`; // Minimal fallback
+      }
     }
-  } catch (_) {
-    // ignore
+
+    // Create coarse segments from the fallback text
+    segments = text.split(/(?:\.|!|\?|\n)+/).map((s) => s.trim()).filter(Boolean).map((t, i) => ({ text: t, duration: 0, offset: i * 3 }));
   }
 
-  // 4) Absolute minimal fallback: use ID as text to keep pipeline alive
-  const text = `YouTube video: ${id}`;
-  const segments: YTSegment[] = [{ text, duration: 0, offset: 0 }];
-  const durationSec = null as unknown as number;
+  // Final check for title if it's still missing
+  if (!title) {
+    try {
+      const oembed = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${id}&format=json`);
+      if (oembed.ok) {
+        const data = await oembed.json() as any;
+        title = (data?.title as string) || `YouTube Video ${id}`;
+      } else {
+        title = `YouTube Video ${id}`;
+      }
+    } catch (e) {
+      title = `YouTube Video ${id}`;
+    }
+  }
+
   const wordCount = (text.match(/[\p{L}\p{N}’'-]+/gu) || []).length;
-  return { id, segments, text, durationSec, wordCount };
+
+  return {
+    id,
+    title,
+    description,
+    segments,
+    text,
+    durationSec: durationSec as unknown as number, // Preserve type for downstream
+    wordCount,
+  };
 }

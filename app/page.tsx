@@ -1,13 +1,13 @@
 "use client";
 import { useFormState } from "react-dom";
-import { analyzeInline, generateFromAnalysis, type AnalyzeState, type GenerateState } from "./server-actions";
+import { analyzeInline, generatePostWithLLM, type AnalyzeState, type GenerateState } from "./server-actions";
 
 const initialAnalyze: AnalyzeState = { ok: false };
 const initialGenerate: GenerateState = { ok: false };
 
 export default function Home() {
   const [aState, analyzeAction] = useFormState(analyzeInline, initialAnalyze);
-  const [gState, generateAction] = useFormState(generateFromAnalysis, initialGenerate);
+  const [gState, generateAction] = useFormState(generatePostWithLLM, initialGenerate);
 
   return (
     <main style={{ display: 'grid', gap: 16 }}>
@@ -45,11 +45,13 @@ export default function Home() {
           <pre style={{ whiteSpace: 'pre-wrap', background: '#f6f8fa', padding: 12, borderRadius: 8 }}>{aState.analysis}</pre>
 
           <form action={generateAction} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input type="hidden" name="analysis" value={aState.analysis} />
+            <input type="hidden" name="transcript" value={aState.transcriptText} />
+            <input type="hidden" name="title" value={aState.title} />
+            <input type="hidden" name="description" value={aState.description} />
             <input name="topic" placeholder="Новая тема (опционально)" style={{ flex: 1, padding: 8, border: '1px solid #ccc', borderRadius: 8 }} />
             <button type="submit" style={{ padding: '8px 12px', background: '#111', color: '#fff', borderRadius: 8 }}>Сгенерировать</button>
           </form>
-          {gState.error && <div style={{ color: '#b91c1c' }}>{gState.error}</div>}
+          {gState.error && <div style={{ color: '#b91c1c' }} data-testid="error-message">{gState.error}</div>}
           {gState.ok && gState.post && (
             <div>
               <h3 style={{ fontSize: 18, fontWeight: 700 }}>Готовый пост</h3>
